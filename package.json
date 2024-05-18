@@ -1,5 +1,4 @@
 {
-  "name": "ai",
   "private": true,
   "scripts": {
     "build": "turbo build",
