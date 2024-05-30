@@ -1,11 +1,18 @@
+import { CoreAssistantMessage, CoreToolMessage } from '../prompt';
 import { CallSettings } from '../prompt/call-settings';
 import { convertToLanguageModelPrompt } from '../prompt/convert-to-language-model-prompt';
 import { getValidatedPrompt } from '../prompt/get-validated-prompt';
 import { prepareCallSettings } from '../prompt/prepare-call-settings';
+import { prepareToolsAndToolChoice } from '../prompt/prepare-tools-and-tool-choice';
 import { Prompt } from '../prompt/prompt';
 import { CoreTool } from '../tool/tool';
-import { CallWarning, FinishReason, LanguageModel, LogProbs } from '../types';
-import { convertZodToJSONSchema } from '../util/convert-zod-to-json-schema';
+import {
+  CallWarning,
+  CoreToolChoice,
+  FinishReason,
+  LanguageModel,
+  LogProbs,
+} from '../types';
 import { retryWithExponentialBackoff } from '../util/retry-with-exponential-backoff';
 import { TokenUsage, calculateTokenUsage } from './token-usage';
 import { ToToolCallArray, parseToolCall } from './tool-call';
@@ -48,6 +55,7 @@ A result object that contains the generated text, the results of the tool calls,
 export async function generateText<TOOLS extends Record<string, CoreTool>>({
   model,
   tools,
+  toolChoice,
   system,
   prompt,
   messages,
@@ -65,6 +73,11 @@ The language model to use.
 The tools that the model can call. The model needs to support calling tools.
 */
     tools?: TOOLS;
+
+    /**
+The tool choice strategy. Default: 'auto'.
+     */
+    toolChoice?: CoreToolChoice<TOOLS>;
   }): Promise<GenerateTextResult<TOOLS>> {
   const retry = retryWithExponentialBackoff({ maxRetries });
   const validatedPrompt = getValidatedPrompt({ system, prompt, messages });
@@ -72,15 +85,7 @@ The tools that the model can call. The model needs to support calling tools.
     return model.doGenerate({
       mode: {
         type: 'regular',
-        tools:
-          tools == null
-            ? undefined
-            : Object.entries(tools).map(([name, tool]) => ({
-                type: 'function',
-                name,
-                description: tool.description,
-                parameters: convertZodToJSONSchema(tool.parameters),
-              })),
+        ...prepareToolsAndToolChoice({ tools, toolChoice }),
       },
       ...prepareCallSettings(settings),
       inputFormat: validatedPrompt.type,
@@ -181,6 +186,15 @@ Warnings from the model provider (e.g. unsupported settings)
   readonly warnings: CallWarning[] | undefined;
 
   /**
+The response messages that were generated during the call. It consists of an assistant message,
+potentially containing tool calls. 
+When there are tool results, there is an additional tool message with the tool results that are available.
+If there are tools that do not have execute functions, they are not included in the tool results and
+need to be added separately.
+   */
+  readonly responseMessages: Array<CoreAssistantMessage | CoreToolMessage>;
+
+  /**
 Optional raw response data.
    */
   rawResponse?: {
@@ -216,7 +230,42 @@ Logprobs for the completion.
     this.warnings = options.warnings;
     this.rawResponse = options.rawResponse;
     this.logprobs = options.logprobs;
+    this.responseMessages = toResponseMessages(options);
   }
+}
+
+/**
+Converts the result of a `generateText` call to a list of response messages.
+ */
+function toResponseMessages<TOOLS extends Record<string, CoreTool>>({
+  text,
+  toolCalls,
+  toolResults,
+}: {
+  text: string;
+  toolCalls: ToToolCallArray<TOOLS>;
+  toolResults: ToToolResultArray<TOOLS>;
+}): Array<CoreAssistantMessage | CoreToolMessage> {
+  const responseMessages: Array<CoreAssistantMessage | CoreToolMessage> = [];
+
+  responseMessages.push({
+    role: 'assistant',
+    content: [{ type: 'text', text }, ...toolCalls],
+  });
+
+  if (toolResults.length > 0) {
+    responseMessages.push({
+      role: 'tool',
+      content: toolResults.map(result => ({
+        type: 'tool-result',
+        toolCallId: result.toolCallId,
+        toolName: result.toolName,
+        result: result.result,
+      })),
+    });
+  }
+
+  return responseMessages;
 }
 
 /**

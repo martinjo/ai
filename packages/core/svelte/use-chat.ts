@@ -212,6 +212,7 @@ export function useChat({
       function_call,
       tools,
       tool_choice,
+      data,
     }: ChatRequestOptions = {},
   ) => {
     if (!message.id) {
@@ -221,6 +222,7 @@ export function useChat({
     const chatRequest: ChatRequest = {
       messages: get(messages).concat(message as Message),
       options,
+      data,
       ...(functions !== undefined && { functions }),
       ...(function_call !== undefined && { function_call }),
       ...(tools !== undefined && { tools }),
